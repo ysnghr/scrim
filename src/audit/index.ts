@@ -19,7 +19,7 @@ import {
 import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 
-export type AuditAction = "redact" | "block" | "alert" | "allow" | "restore";
+export type AuditAction = "redact" | "block" | "alert" | "allow" | "restore" | "rewrite" | "evict" | "wipe";
 
 export interface AuditEntry {
   ts?: string;             // ISO-8601; auto-filled if omitted
@@ -129,7 +129,7 @@ export function hashValue(repoRoot: string, value: string): string {
 export function summary(repoRoot: string): { total: number; byAction: Record<AuditAction, number> } {
   const { logPath } = paths(repoRoot);
   const byAction: Record<AuditAction, number> = {
-    redact: 0, block: 0, alert: 0, allow: 0, restore: 0,
+    redact: 0, block: 0, alert: 0, allow: 0, restore: 0, rewrite: 0, evict: 0, wipe: 0,
   };
   if (!existsSync(logPath)) return { total: 0, byAction };
   let total = 0;

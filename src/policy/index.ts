@@ -29,6 +29,10 @@ export interface Policy {
   };
   failClosed: boolean;
   allow: string[];
+  vault: {
+    maxEntries: number;     // LRU cap; 0 disables eviction
+    wipeOnStop: boolean;    // wipe vault files on session end (Stop hook)
+  };
 }
 
 // The built-in default. Mirrors policy/default-policy.yml. Hardcoding it here
@@ -47,6 +51,7 @@ export function defaultPolicy(): Policy {
     tune: { envKeysFrom: [".env.example"], internalDomains: [], customPatterns: [] },
     failClosed: true,
     allow: ["AKIAIOSFODNN7EXAMPLE"],
+    vault: { maxEntries: 10_000, wipeOnStop: true },
   };
 }
 
@@ -89,6 +94,15 @@ function requireString(obj: Record<string, unknown>, key: string, path: string, 
   const v = obj[key];
   if (v === undefined) return undefined;
   if (typeof v !== "string") throw new PolicyError(`expected string, got ${typeof v}`, `${path}.${key}`, source);
+  return v;
+}
+
+function requireNonNegInt(obj: Record<string, unknown>, key: string, path: string, source: string): number | undefined {
+  const v = obj[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
+    throw new PolicyError(`expected non-negative integer, got ${JSON.stringify(v)}`, `${path}.${key}`, source);
+  }
   return v;
 }
 
@@ -201,7 +215,20 @@ function validate(raw: unknown, source: string, base: Policy): Policy {
   const al = requireStringArray(r, "allow", "policy", source);
   if (al !== undefined) allow = al;
 
-  return { version, actions, detection, tune, failClosed, allow };
+  // vault
+  const vault = { ...base.vault };
+  if (r["vault"] !== undefined) {
+    if (typeof r["vault"] !== "object" || r["vault"] === null || Array.isArray(r["vault"])) {
+      throw new PolicyError("expected an object", "policy.vault", source);
+    }
+    const vv = r["vault"] as Record<string, unknown>;
+    const m = requireNonNegInt(vv, "max_entries", "policy.vault", source);
+    if (m !== undefined) vault.maxEntries = m;
+    const w = requireBool(vv, "wipe_on_stop", "policy.vault", source);
+    if (w !== undefined) vault.wipeOnStop = w;
+  }
+
+  return { version, actions, detection, tune, failClosed, allow, vault };
 }
 
 export function loadPolicyFromString(yamlText: string, source = "<inline>"): Policy {
