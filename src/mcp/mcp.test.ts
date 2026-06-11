@@ -34,8 +34,8 @@ test("processText redacts secrets and audits each detection", () => {
   assert.equal(detections.length, 2);
   assert.ok(!output.includes("AKIAIOSFODNN7EXAMPL2"), "raw AWS key should be replaced");
   assert.ok(!output.includes("ghp_aaaa"), "raw GitHub PAT should be replaced");
-  assert.match(output, /⟦scrim:aws-access-key-id:[a-f0-9]{8}⟧/);
-  assert.match(output, /⟦scrim:github-token-classic:[a-f0-9]{8}⟧/);
+  assert.match(output, /⟦scrim:aws-access-key-id:[a-f0-9]{12}⟧/);
+  assert.match(output, /⟦scrim:github-token-classic:[a-f0-9]{12}⟧/);
 
   const recent = auditTail(root, 10);
   assert.equal(recent.length, 2);
@@ -99,6 +99,8 @@ test("safe_read returns masked file content and detection count", () => {
   const ctx = buildContext(root);
 
   const res = safeRead({ path: "config.yml" }, ctx);
+  assert.equal(res.kind, "content");
+  if (res.kind !== "content") return;
   assert.equal(res.path, "config.yml");
   assert.ok(res.detections >= 2, `expected detections >= 2, got ${res.detections}`);
   assert.ok(!res.content.includes("hunter2-realsecret-abc"));
@@ -114,12 +116,47 @@ test("safe_read refuses binary files", () => {
   assert.throws(() => safeRead({ path: "blob.bin" }, ctx), /binary/);
 });
 
-test("safe_read enforces maxBytes", () => {
+test("safe_read returns a streaming summary when file exceeds maxBytes", () => {
   const root = freshRepo();
   const target = join(root, "big.txt");
-  writeFileSync(target, "x".repeat(2048));
+  // Pack the file with a known secret plus padding so it's clearly above the
+  // tiny maxBytes the test sets.
+  const padding = "x".repeat(4000);
+  writeFileSync(target, `${padding}\nTOKEN=AKIAIOSFODNN7EXAMPL2\n${padding}\n`);
   const ctx = buildContext(root);
-  assert.throws(() => safeRead({ path: "big.txt", maxBytes: 1024 }, ctx), /exceeds maxBytes/);
+  const res = safeRead({ path: "big.txt", maxBytes: 1024 }, ctx);
+  assert.equal(res.kind, "summary");
+  if (res.kind !== "summary") return;
+  assert.ok(res.fileSize > 1024);
+  const aws = res.summary.find((s) => s.ruleId === "aws-access-key-id");
+  assert.ok(aws, "expected an aws-access-key-id detection in the summary");
+  assert.equal(aws!.count, 1);
+  assert.equal(aws!.tokenRefs.length, 1);
+  assert.ok(aws!.tokenRefs[0]!.startsWith("⟦scrim:"));
+  assert.deepEqual(aws!.lines, [2]); // padding is line 1, TOKEN= is on line 2
+});
+
+test("safe_read byteRange returns redacted content of just the slice", () => {
+  const root = freshRepo();
+  const target = join(root, "huge.txt");
+  // 12 KB > our small maxBytes; secret lives in bytes 8000..8030
+  const head = "lorem ipsum ".repeat(660); // ~7920 bytes, no secret
+  const secret = "AKIAIOSFODNN7EXAMPL2";   // 20 bytes
+  const tail = " dolor sit amet ".repeat(250); // pads past the cap
+  writeFileSync(target, head + secret + tail);
+  const ctx = buildContext(root);
+  // Pull a window that contains the secret. byteRange is bounded by maxBytes
+  // not by file size, so we get redacted content back even though the file
+  // itself is over the cap.
+  const res = safeRead({
+    path: "huge.txt",
+    maxBytes: 4096,
+    byteRange: [head.length - 100, head.length + secret.length + 100],
+  }, ctx);
+  assert.equal(res.kind, "content");
+  if (res.kind !== "content") return;
+  assert.ok(!res.content.includes(secret), "raw secret should not leak in the slice");
+  assert.match(res.content, /⟦scrim:aws-access-key-id:/);
 });
 
 test("safe_read returns blocked outcome when policy blocks", () => {
@@ -129,6 +166,8 @@ test("safe_read returns blocked outcome when policy blocks", () => {
   const ctx = buildContext(root);
   const res = safeRead({ path: "secret.env" }, ctx);
   assert.ok(res.blocked, "expected blocked field");
+  assert.equal(res.kind, "content");
+  if (res.kind !== "content") return;
   assert.equal(res.content, "");
 });
 
@@ -145,6 +184,31 @@ test("safe_grep redacts matched lines and excludes non-matching lines", () => {
   assert.equal(res.matches.length, 1);
   assert.equal(res.matches[0]!.path, "a.yml");
   assert.ok(!res.matches[0]!.text.includes("X9kQ2vWp1aZmL7Tu4N3bR8"));
+});
+
+test("safe_grep skips paths matched by repo .gitignore", () => {
+  const root = freshRepo();
+  mkdirSync(join(root, "foo"), { recursive: true });
+  writeFileSync(join(root, ".gitignore"), "foo/\n");
+  writeFileSync(join(root, "visible.txt"), "password: hunter2-X9kQ2vWp1aZmL7Tu4N3bR8\n");
+  writeFileSync(join(root, "foo", "hidden.txt"), "password: hunter2-X9kQ2vWp1aZmL7Tu4N3bR8\n");
+  const ctx = buildContext(root);
+
+  const res = safeGrep({ pattern: "password" }, ctx);
+  assert.equal(res.matches.length, 1);
+  assert.equal(res.matches[0]!.path, "visible.txt");
+});
+
+test("safe_grep always skips .scrim/ even with no .gitignore", () => {
+  const root = freshRepo();
+  mkdirSync(join(root, ".scrim"), { recursive: true });
+  writeFileSync(join(root, ".scrim", "internal.txt"), "password: leaks-from-state\n");
+  writeFileSync(join(root, "visible.txt"), "password: hunter2-X9kQ2vWp1aZmL7Tu4N3bR8\n");
+  const ctx = buildContext(root);
+
+  const res = safeGrep({ pattern: "password" }, ctx);
+  assert.equal(res.matches.length, 1);
+  assert.equal(res.matches[0]!.path, "visible.txt");
 });
 
 test("safe_grep honors maxMatches and reports truncation", () => {

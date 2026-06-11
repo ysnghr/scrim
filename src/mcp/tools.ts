@@ -5,11 +5,14 @@
 // Bash guard) are NOT registered here — they live as separate executables under
 // bin/ because Claude Code spawns hook commands as standalone processes.
 
-import { readFileSync, statSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, statSync, readdirSync, existsSync, openSync, readSync, closeSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, relative, resolve, isAbsolute } from "node:path";
+import ignore, { type Ignore } from "ignore";
 import { processText, BlockedError } from "./process.js";
 import { append as auditAppend, hashValue, summary as auditSummary, tail as auditTail } from "../audit/index.js";
+import { detectStreaming } from "../engine/streaming.js";
+import { actionFor } from "../policy/index.js";
 import type { Context } from "./context.js";
 
 // Heuristic binary check: presence of a null byte in the first 8 KiB.
@@ -28,22 +31,55 @@ function resolveAgainst(root: string, p: string): string {
 export interface SafeReadArgs {
   path: string;
   maxBytes?: number;
+  // Read only this byte slice [start, end) and run the whole-buffer pipeline
+  // on the slice. Bounded by maxBytes against (end - start). Use this to
+  // fetch a window of a file too large to read whole.
+  byteRange?: [number, number];
 }
-export interface SafeReadResult {
-  path: string;
-  bytes: number;
-  detections: number;
-  content: string;
-  blocked?: { ruleId: string; class: string };
+
+export interface SafeReadDetectionSummary {
+  ruleId: string;
+  class: string;
+  count: number;
+  tokenRefs: string[];
+  lines: number[];
 }
+
+// safe_read returns `kind: "content"` when the redacted file/slice fits in
+// memory, and `kind: "summary"` for files larger than maxBytes (the chunked
+// streaming path). Callers must check kind before reading content / summary.
+export type SafeReadResult =
+  | {
+      kind: "content";
+      path: string;
+      bytes: number;
+      detections: number;
+      content: string;
+      blocked?: { ruleId: string; class: string };
+    }
+  | {
+      kind: "summary";
+      path: string;
+      bytes: number;
+      fileSize: number;
+      summary: SafeReadDetectionSummary[];
+      blocked?: { ruleId: string; class: string };
+    };
 
 export function safeRead(args: SafeReadArgs, ctx: Context): SafeReadResult {
   const target = resolveAgainst(ctx.repoRoot, args.path);
-  const maxBytes = args.maxBytes ?? 2_000_000;
+  const maxBytes = args.maxBytes ?? ctx.policy.detection.maxBytes;
   const stat = statSync(target);
-  if (stat.size > maxBytes) {
-    throw new Error(`scrim: ${args.path} exceeds maxBytes (${stat.size} > ${maxBytes})`);
+  const relPath = relative(ctx.repoRoot, target) || args.path;
+
+  if (args.byteRange) {
+    return safeReadSlice(target, relPath, args.byteRange, maxBytes, ctx);
   }
+
+  if (stat.size > maxBytes) {
+    return safeReadStreaming(target, relPath, stat.size, ctx);
+  }
+
   const buf = readFileSync(target);
   if (looksBinary(buf)) {
     throw new Error(`scrim: ${args.path} appears to be binary; refusing to redact`);
@@ -52,7 +88,8 @@ export function safeRead(args: SafeReadArgs, ctx: Context): SafeReadResult {
   try {
     const { output, detections } = processText(text, "safe_read", ctx);
     return {
-      path: relative(ctx.repoRoot, target) || args.path,
+      kind: "content",
+      path: relPath,
       bytes: buf.length,
       detections: detections.length,
       content: output,
@@ -60,7 +97,8 @@ export function safeRead(args: SafeReadArgs, ctx: Context): SafeReadResult {
   } catch (err) {
     if (err instanceof BlockedError) {
       return {
-        path: relative(ctx.repoRoot, target) || args.path,
+        kind: "content",
+        path: relPath,
         bytes: buf.length,
         detections: 0,
         content: "",
@@ -69,6 +107,123 @@ export function safeRead(args: SafeReadArgs, ctx: Context): SafeReadResult {
     }
     throw err;
   }
+}
+
+function safeReadSlice(
+  target: string,
+  relPath: string,
+  range: [number, number],
+  maxBytes: number,
+  ctx: Context,
+): SafeReadResult {
+  const [start, end] = range;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) {
+    throw new Error(`scrim: byteRange must be [start, end) with 0 <= start < end (got [${start}, ${end}])`);
+  }
+  const sliceLen = end - start;
+  if (sliceLen > maxBytes) {
+    throw new Error(`scrim: byteRange slice (${sliceLen} bytes) exceeds maxBytes (${maxBytes})`);
+  }
+  const fd = openSync(target, "r");
+  let buf: Buffer;
+  try {
+    buf = Buffer.alloc(sliceLen);
+    const got = readSync(fd, buf, 0, sliceLen, start);
+    if (got < sliceLen) buf = buf.subarray(0, got);
+  } finally {
+    closeSync(fd);
+  }
+  if (looksBinary(buf)) {
+    throw new Error(`scrim: ${relPath} byte range appears to be binary; refusing to redact`);
+  }
+  const text = buf.toString("utf8");
+  try {
+    const { output, detections } = processText(text, "safe_read", ctx);
+    return {
+      kind: "content",
+      path: relPath,
+      bytes: buf.length,
+      detections: detections.length,
+      content: output,
+    };
+  } catch (err) {
+    if (err instanceof BlockedError) {
+      return {
+        kind: "content",
+        path: relPath,
+        bytes: buf.length,
+        detections: 0,
+        content: "",
+        blocked: { ruleId: err.ruleId, class: err.klass },
+      };
+    }
+    throw err;
+  }
+}
+
+function safeReadStreaming(
+  target: string,
+  relPath: string,
+  fileSize: number,
+  ctx: Context,
+): SafeReadResult {
+  const { detections: raw } = detectStreaming(target, ctx.engine, {
+    chunkBytes: ctx.policy.detection.chunkBytes,
+    overlapBytes: ctx.policy.detection.chunkOverlap,
+  });
+
+  const buckets = new Map<string, SafeReadDetectionSummary>();
+  let blocked: { ruleId: string; class: string } | undefined;
+
+  for (const d of raw) {
+    const action = actionFor(ctx.policy, d.span.class);
+    const valueHash = hashValue(ctx.repoRoot, d.value);
+
+    if (action === "allow") continue;
+
+    if (action === "block") {
+      auditAppend(ctx.repoRoot, {
+        ruleId: d.span.ruleId, tool: "safe_read", action: "block", valueHash,
+      });
+      blocked = { ruleId: d.span.ruleId, class: d.span.class };
+      break;
+    }
+
+    let bucket = buckets.get(d.span.ruleId);
+    if (!bucket) {
+      bucket = { ruleId: d.span.ruleId, class: d.span.class, count: 0, tokenRefs: [], lines: [] };
+      buckets.set(d.span.ruleId, bucket);
+    }
+    bucket.count++;
+    bucket.lines.push(d.line);
+
+    if (action === "redact") {
+      const tokenRef = ctx.vault.tokenize(d.value, d.span.ruleId, d.span.ruleId);
+      bucket.tokenRefs.push(tokenRef);
+      auditAppend(ctx.repoRoot, {
+        ruleId: d.span.ruleId, tool: "safe_read", action: "redact", tokenRef, valueHash,
+      });
+      for (const evicted of ctx.vault.drainEvicted()) {
+        auditAppend(ctx.repoRoot, {
+          ruleId: "vault-evict", tool: "safe_read", action: "evict", tokenRef: evicted,
+          context: { reason: "lru-cap" },
+        });
+      }
+    } else if (action === "alert") {
+      auditAppend(ctx.repoRoot, {
+        ruleId: d.span.ruleId, tool: "safe_read", action: "alert", valueHash,
+      });
+    }
+  }
+
+  return {
+    kind: "summary",
+    path: relPath,
+    bytes: fileSize,
+    fileSize,
+    summary: Array.from(buckets.values()),
+    ...(blocked ? { blocked } : {}),
+  };
 }
 
 // ---------------- safe_grep ----------------
@@ -89,11 +244,41 @@ export interface SafeGrepResult {
   truncated: boolean;
 }
 
-// Skip these directories during recursive search — they're never interesting
-// and tend to be huge.
-const GREP_SKIP = new Set([".git", "node_modules", ".scrim", "dist", "build", "bin"]);
+// Hardcoded directory patterns added on top of the repo's own .gitignore. `.git`
+// and `.scrim` are never interesting; the rest are ecosystem dependency dirs
+// that crowd out signal in monorepos whose .gitignore doesn't list them.
+const FALLBACK_IGNORES = [
+  ".git/",
+  ".scrim/",
+  "node_modules/",
+  "dist/",
+  "build/",
+  "bin/",
+  "target/",
+  "__pycache__/",
+  ".venv/",
+  "vendor/",
+  "Pods/",
+  "obj/",
+  "packages/",
+  ".terraform/",
+];
 
-function walkFiles(root: string, out: string[]): void {
+function loadIgnore(repoRoot: string): Ignore {
+  const ig = ignore();
+  ig.add(FALLBACK_IGNORES);
+  const gi = join(repoRoot, ".gitignore");
+  if (existsSync(gi)) {
+    try {
+      ig.add(readFileSync(gi, "utf8"));
+    } catch {
+      // best-effort; fall back to the hardcoded list above
+    }
+  }
+  return ig;
+}
+
+function walkFiles(root: string, out: string[], ig: Ignore, repoRoot: string): void {
   let entries;
   try {
     entries = readdirSync(root, { withFileTypes: true });
@@ -101,10 +286,13 @@ function walkFiles(root: string, out: string[]): void {
     return;
   }
   for (const e of entries) {
-    if (e.name.startsWith(".") && GREP_SKIP.has(e.name)) continue;
-    if (GREP_SKIP.has(e.name)) continue;
     const p = join(root, e.name);
-    if (e.isDirectory()) walkFiles(p, out);
+    // ignore-library wants posix-style relative paths from the gitignore root.
+    let rel = relative(repoRoot, p).split("\\").join("/");
+    if (!rel || rel.startsWith("..")) continue;
+    if (e.isDirectory()) rel += "/";
+    if (ig.ignores(rel)) continue;
+    if (e.isDirectory()) walkFiles(p, out, ig, repoRoot);
     else if (e.isFile()) out.push(p);
   }
 }
@@ -116,8 +304,12 @@ export function safeGrep(args: SafeGrepArgs, ctx: Context): SafeGrepResult {
 
   const stat = statSync(start);
   const files: string[] = [];
-  if (stat.isDirectory()) walkFiles(start, files);
-  else files.push(start);
+  if (stat.isDirectory()) {
+    const ig = loadIgnore(ctx.repoRoot);
+    walkFiles(start, files, ig, ctx.repoRoot);
+  } else {
+    files.push(start);
+  }
 
   const matches: SafeGrepMatch[] = [];
   let truncated = false;
