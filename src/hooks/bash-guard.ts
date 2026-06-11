@@ -45,8 +45,11 @@ function alwaysRisky(id: string, why: string): ArgMatcher {
 }
 
 function procEnvironMatcher(_argv: string[]): RiskyMatch | null {
+  // Match /proc/<pid>/environ, /proc/self/environ, /proc//environ (var
+  // expanded to empty), and /proc/environ (var collapsed entirely — e.g.
+  // shell-quote stripping $$ with env={}).
   for (const a of _argv.slice(1)) {
-    if (/^\/proc\/[^/]+\/environ\b/.test(a)) {
+    if (/^\/proc\/(?:[^/]*\/)?environ\b/.test(a)) {
       return {
         id: "proc-environ",
         why: "/proc/*/environ exposes a process's environment, which routinely includes credentials",
@@ -236,9 +239,12 @@ function decideCommand(command: string): RiskyMatch | null {
 
   let parsed: ParseEntry[];
   try {
-    // Function-form env so $VAR references survive as empty strings rather
-    // than throwing or expanding to literal text from process.env.
-    parsed = parse(command, () => undefined);
+    // Pass an empty env so $VAR references resolve to empty strings rather
+    // than reading from process.env. Typed as a Record so TS picks the
+    // object-form overload (returns ParseEntry[]); the function-form overload
+    // returns a wider Array<ParseEntry | T>.
+    const env: Record<string, string | undefined> = {};
+    parsed = parse(command, env);
   } catch {
     return regexFallback(command);
   }
