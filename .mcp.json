@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "scrim": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/scrim-mcp.js"],
+      "env": {
+        "SCRIM_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"
+      }
+    }
+  }
+}

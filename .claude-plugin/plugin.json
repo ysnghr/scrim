@@ -1,0 +1,12 @@
+{
+  "name": "scrim",
+  "description": "Context firewall for Claude Code: detect, reversibly tokenize, and de-tokenize secrets and PII at the tool boundary so the model never sees raw sensitive content but files stay byte-correct.",
+  "version": "0.0.1",
+  "author": {
+    "name": "Yasin Ughur"
+  },
+  "homepage": "https://github.com/yasinughur/scrim",
+  "repository": "https://github.com/yasinughur/scrim",
+  "license": "MIT",
+  "keywords": ["security", "dlp", "secrets", "pii", "redaction", "mcp"]
+}
