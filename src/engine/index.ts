@@ -9,15 +9,15 @@
 // raw content. Presidio is the exception — it is opt-in and additive and only
 // degrades coverage on failure (see presidio.ts).
 
-import { detectSecrets } from "./secrets.ts";
-import { detectFastPii } from "./pii.ts";
-import { detectTuned, parseEnvKeys, globToHostRegex, type TunedConfig } from "./tuned.ts";
-import { detectPresidio } from "./presidio.ts";
-import { mergeSpans, type DetectionSpan } from "./spans.ts";
+import { detectSecrets } from "./secrets.js";
+import { detectFastPii } from "./pii.js";
+import { detectTuned, parseEnvKeys, globToHostRegex, type TunedConfig } from "./tuned.js";
+import { detectPresidio } from "./presidio.js";
+import { mergeSpans, type DetectionSpan } from "./spans.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-export type { DetectionSpan } from "./spans.ts";
+export type { DetectionSpan } from "./spans.js";
 
 export interface EngineConfig {
   gitleaks: boolean;

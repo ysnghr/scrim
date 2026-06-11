@@ -1,0 +1,40 @@
+// Secret detection: runs Gitleaks-style rules and emits spans pointing at the
+// secret VALUE (not its surrounding key=) so the tokenizer replaces only the
+// sensitive bytes. Drops matches whose value is in the allowlist or fails the
+// rule's entropy threshold.
+
+import { SECRET_RULES, shannonEntropy } from "./rules/secrets-rules.js";
+import type { DetectionSpan } from "./spans.js";
+
+export function detectSecrets(text: string, allowlist: Set<string>): DetectionSpan[] {
+  const out: DetectionSpan[] = [];
+  for (const rule of SECRET_RULES) {
+    // Rebuild each time so we don't share lastIndex state across calls.
+    const re = new RegExp(rule.pattern.source, rule.pattern.flags);
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const value = m[1] ?? m[0];
+      if (!value) {
+        if (m.index === re.lastIndex) re.lastIndex++;
+        continue;
+      }
+      if (allowlist.has(value)) continue;
+      if (rule.entropy !== undefined && shannonEntropy(value) < rule.entropy) continue;
+
+      // Locate the captured group (group 1) within the full match so we tokenize
+      // only the value, not the leading key/quote.
+      const fullStart = m.index;
+      const valueStart = m[1] !== undefined ? text.indexOf(value, fullStart) : fullStart;
+      if (valueStart < 0) continue;
+      out.push({
+        start: valueStart,
+        end: valueStart + value.length,
+        class: rule.class,
+        ruleId: rule.id,
+      });
+
+      if (m.index === re.lastIndex) re.lastIndex++;
+    }
+  }
+  return out;
+}
