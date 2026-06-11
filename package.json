@@ -12,7 +12,8 @@
     "build": "tsc -p .",
     "watch": "tsc -p . --watch",
     "typecheck": "tsc -p . --noEmit",
-    "test": "npm run build && node --test bin/**/*.test.js"
+    "test": "npm run build && node --test bin/**/*.test.js",
+    "check:rules": "npm run build && node scripts/check-rules.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
