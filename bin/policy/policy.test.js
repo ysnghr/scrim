@@ -133,3 +133,23 @@ test("empty policy file yields defaults", () => {
     assert.deepEqual(loadPolicyFromString(""), defaultPolicy());
     assert.deepEqual(loadPolicyFromString("\n# only a comment\n"), defaultPolicy());
 });
+test("vault block: max_entries and wipe_on_stop translate to camelCase", () => {
+    const p = loadPolicyFromString(`
+vault:
+  max_entries: 500
+  wipe_on_stop: false
+`);
+    assert.equal(p.vault.maxEntries, 500);
+    assert.equal(p.vault.wipeOnStop, false);
+});
+test("vault block: defaults preserved when not specified", () => {
+    const p = loadPolicyFromString("actions:\n  secrets: alert\n");
+    assert.equal(p.vault.maxEntries, 10000);
+    assert.equal(p.vault.wipeOnStop, true);
+});
+test("vault.max_entries: negative is rejected", () => {
+    assert.throws(() => loadPolicyFromString("vault:\n  max_entries: -5\n", "<test>"), /policy\.vault\.max_entries.*non-negative integer/);
+});
+test("vault.wipe_on_stop: wrong type is rejected", () => {
+    assert.throws(() => loadPolicyFromString("vault:\n  wipe_on_stop: maybe\n", "<test>"), /policy\.vault\.wipe_on_stop.*expected boolean/);
+});
