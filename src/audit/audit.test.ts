@@ -89,14 +89,50 @@ test("hashValue length is 12 hex chars and changes with input", () => {
   assert.equal(h1.length, 12);
 });
 
-test("oversized entries are rejected to preserve PIPE_BUF atomicity", () => {
+test("oversized context is truncated and followed by an audit-truncate entry", () => {
   const root = freshRepo();
   const huge = "x".repeat(5000);
+  append(root, {
+    ruleId: "a", tool: "safe_read", action: "redact",
+    context: { blob: huge },
+  });
+  const raw = readFileSync(logPathFor(root), "utf8");
+  const lines = raw.split("\n").filter(Boolean);
+  assert.equal(lines.length, 2, "expected truncated entry + follow-up");
+  for (const line of lines) {
+    assert.ok(line.length + 1 <= 4000, `line over PIPE_BUF cap: ${line.length}`);
+    assert.ok(!line.includes("xxxxxxxxxx"), "raw oversized content leaked into log");
+  }
+  const first = JSON.parse(lines[0]!);
+  assert.equal(first.ruleId, "a");
+  assert.equal(first.action, "redact");
+  assert.equal(first.context.truncated, true);
+  assert.ok(first.context.originalContextBytes > 4000);
+  const second = JSON.parse(lines[1]!);
+  assert.equal(second.ruleId, "audit-truncate");
+  assert.equal(second.action, "truncate");
+  assert.equal(second.tool, "safe_read");
+  assert.equal(second.context.originalRuleId, "a");
+  assert.ok(second.context.droppedBytes > 4000);
+});
+
+test("summary counts the new truncate action", () => {
+  const root = freshRepo();
+  append(root, {
+    ruleId: "a", tool: "safe_read", action: "redact",
+    context: { blob: "y".repeat(5000) },
+  });
+  const s = summary(root);
+  assert.equal(s.byAction.redact, 1);
+  assert.equal(s.byAction.truncate, 1);
+});
+
+test("entry too large even without context still throws", () => {
+  const root = freshRepo();
+  // ruleId of 4500 chars cannot fit under PIPE_BUF no matter what context does.
+  const giantRuleId = "r".repeat(4500);
   assert.throws(
-    () => append(root, {
-      ruleId: "a", tool: "safe_read", action: "redact",
-      context: { blob: huge },
-    }),
+    () => append(root, { ruleId: giantRuleId, tool: "safe_read", action: "redact" }),
     /audit entry too large/,
   );
 });

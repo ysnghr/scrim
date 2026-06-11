@@ -19,7 +19,7 @@ import {
 import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 
-export type AuditAction = "redact" | "block" | "alert" | "allow" | "restore" | "rewrite" | "evict" | "wipe";
+export type AuditAction = "redact" | "block" | "alert" | "allow" | "restore" | "rewrite" | "evict" | "wipe" | "truncate";
 
 export interface AuditEntry {
   ts?: string;             // ISO-8601; auto-filled if omitted
@@ -82,17 +82,50 @@ function sanitize(entry: AuditEntry): Record<string, unknown> {
   return out;
 }
 
+// Stay well under PIPE_BUF (typically 4 KiB) so cross-process appends don't
+// interleave. Entries above this get their `context` truncated and a paired
+// "truncate" follow-up entry written, so /scrim:audit shows the loss.
+const MAX_LINE = 4000;
+
 export function append(repoRoot: string, entry: AuditEntry): void {
   const { dir, logPath } = paths(repoRoot);
   ensureDir(dir);
   const sanitized = sanitize(entry);
   if (sanitized["ts"] === undefined) sanitized["ts"] = new Date().toISOString();
-  const line = JSON.stringify(sanitized) + "\n";
-  if (line.length > 4000) {
-    // Stay well under PIPE_BUF so cross-process appends don't interleave.
-    throw new Error(`scrim: audit entry too large (${line.length} bytes)`);
+  let line = JSON.stringify(sanitized) + "\n";
+  if (line.length <= MAX_LINE) {
+    appendFileSync(logPath, line);
+    return;
+  }
+  // Oversized — replace context with a minimal placeholder, then write a paired
+  // follow-up entry so the truncation is visible. Audit stays value-free: the
+  // placeholder is bounded metadata, never the dropped content.
+  const originalContext = sanitized["context"];
+  const originalContextBytes = originalContext === undefined
+    ? 0
+    : JSON.stringify(originalContext).length;
+  sanitized["context"] = { truncated: true, originalContextBytes };
+  line = JSON.stringify(sanitized) + "\n";
+  if (line.length > MAX_LINE) {
+    // Degenerate ruleId/tool — drop context entirely.
+    delete sanitized["context"];
+    line = JSON.stringify(sanitized) + "\n";
+    if (line.length > MAX_LINE) {
+      throw new Error(`scrim: audit entry too large even without context (${line.length} bytes)`);
+    }
   }
   appendFileSync(logPath, line);
+  const followUp = sanitize({
+    ruleId: "audit-truncate",
+    tool: entry.tool,
+    action: "truncate",
+    context: {
+      originalRuleId: entry.ruleId,
+      droppedBytes: originalContextBytes,
+    },
+  });
+  followUp["ts"] = new Date().toISOString();
+  appendFileSync(logPath, JSON.stringify(followUp) + "\n");
 }
 
 export function tail(repoRoot: string, n: number): AuditEntry[] {
@@ -129,7 +162,7 @@ export function hashValue(repoRoot: string, value: string): string {
 export function summary(repoRoot: string): { total: number; byAction: Record<AuditAction, number> } {
   const { logPath } = paths(repoRoot);
   const byAction: Record<AuditAction, number> = {
-    redact: 0, block: 0, alert: 0, allow: 0, restore: 0, rewrite: 0, evict: 0, wipe: 0,
+    redact: 0, block: 0, alert: 0, allow: 0, restore: 0, rewrite: 0, evict: 0, wipe: 0, truncate: 0,
   };
   if (!existsSync(logPath)) return { total: 0, byAction };
   let total = 0;
