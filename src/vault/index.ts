@@ -155,8 +155,9 @@ function sha256Hex(value: string): string {
 }
 
 function newId(): string {
-  // 4 bytes → 8 hex chars; per-session id space of 2^32 is plenty.
-  return randomBytes(4).toString("hex");
+  // 6 bytes → 12 hex chars; birthday-bound 50% collision at ~20M mints —
+  // comfortably above the default LRU cap of 10k.
+  return randomBytes(6).toString("hex");
 }
 
 class FileVault implements Vault {
