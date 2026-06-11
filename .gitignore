@@ -1,0 +1,6 @@
+node_modules/
+bin/*.js
+bin/*.js.map
+.scrim/
+*.tsbuildinfo
+.DS_Store
