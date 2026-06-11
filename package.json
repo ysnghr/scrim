@@ -12,7 +12,7 @@
     "build": "tsc -p .",
     "watch": "tsc -p . --watch",
     "typecheck": "tsc -p . --noEmit",
-    "test": "node --test"
+    "test": "npm run build && node --test bin/engine/engine.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
