@@ -144,7 +144,12 @@ test("killer scenario: detokenize denies a write that contains an unknown token"
 });
 test("plugin binaries exist after build", () => {
     // Sanity: hooks.json and .mcp.json both reference these paths.
-    for (const p of [MCP_BIN, DETOKENIZE_BIN, join(PLUGIN_ROOT, "bin", "scrim-bash-guard.js")]) {
+    for (const p of [
+        MCP_BIN,
+        DETOKENIZE_BIN,
+        join(PLUGIN_ROOT, "bin", "scrim-bash-guard.js"),
+        join(PLUGIN_ROOT, "bin", "scrim-stop.js"),
+    ]) {
         assert.ok(existsSync(p), `missing build artifact: ${p}`);
     }
 });
@@ -154,7 +159,11 @@ test("plugin manifests reference valid paths", () => {
     const argPath = args[0].replace("${CLAUDE_PLUGIN_ROOT}", PLUGIN_ROOT);
     assert.ok(existsSync(argPath), `.mcp.json points at missing file: ${argPath}`);
     const hooksJson = JSON.parse(readFileSync(join(PLUGIN_ROOT, "hooks", "hooks.json"), "utf8"));
-    for (const matcher of hooksJson.hooks.PreToolUse) {
+    const allHookGroups = [
+        ...(hooksJson.hooks.PreToolUse ?? []),
+        ...(hooksJson.hooks.Stop ?? []),
+    ];
+    for (const matcher of allHookGroups) {
         for (const h of matcher.hooks) {
             // command is "node ${CLAUDE_PLUGIN_ROOT}/bin/X.js"; pull out the .js path.
             const m = h.command.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/(\S+)/);
