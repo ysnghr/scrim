@@ -112,9 +112,150 @@ export const SECRET_RULES: SecretRule[] = [
     pattern: re("(?:postgres|postgresql|mysql|mongodb(?:\\+srv)?|redis|amqps?|https?)://[^\\s:/@]+:([^\\s/@]+)@", "gi"),
   },
 
+  // --- Cloud / hosting providers ---
+  {
+    id: "digitalocean-token",
+    class: "secrets",
+    pattern: re("\\b(do[oprs]_v1_[a-f0-9]{64})\\b"),
+  },
+  {
+    id: "hashicorp-vault-token",
+    class: "secrets",
+    pattern: re("\\b(hv[bs]\\.[A-Za-z0-9_\\-]{90,200})\\b"),
+  },
+  {
+    id: "heroku-platform-token",
+    class: "secrets",
+    pattern: re("\\b(HRKU-[A-Za-z0-9_\\-]{30,})\\b"),
+  },
+
+  // --- Email / messaging / CRM ---
+  {
+    id: "sendinblue-key",
+    class: "secrets",
+    pattern: re("\\b(xkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16})\\b"),
+  },
+  {
+    id: "slack-webhook-url",
+    class: "secrets",
+    pattern: re("(https://hooks\\.slack\\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{20,})", "g"),
+  },
+
+  // --- Observability ---
+  {
+    // Sentry auth tokens: sntrys_ (secret), sntryu_ (user), sntryo_ (org).
+    id: "sentry-token",
+    class: "secrets",
+    pattern: re("\\b(sntry[suo]_[A-Za-z0-9]{64})\\b"),
+  },
+
+  // --- Commerce / payments ---
+  {
+    id: "shopify-token",
+    class: "secrets",
+    pattern: re("\\b(shp(?:at|ca|ss|pa)_[a-fA-F0-9]{32})\\b"),
+  },
+  {
+    id: "square-access-token",
+    class: "secrets",
+    pattern: re("\\b(EAAA[A-Za-z0-9_\\-]{60})\\b"),
+  },
+  {
+    id: "plaid-key",
+    class: "secrets",
+    pattern: re("\\b(access-(?:sandbox|development|production)-[a-f0-9\\-]{36})\\b"),
+  },
+
+  // --- AI / ML platforms ---
+  {
+    id: "huggingface-token",
+    class: "secrets",
+    pattern: re("\\b(hf_[A-Za-z]{34,40})\\b"),
+  },
+
+  // --- Productivity SaaS ---
+  {
+    id: "linear-api-key",
+    class: "secrets",
+    pattern: re("\\b(lin_api_[A-Za-z0-9]{40})\\b"),
+  },
+  {
+    id: "notion-integration-token",
+    class: "secrets",
+    pattern: re("\\b(secret_[A-Za-z0-9]{43})\\b"),
+  },
+  {
+    id: "asana-pat",
+    class: "secrets",
+    pattern: re("\\b(1/\\d{16}:[a-f0-9]{32})\\b"),
+  },
+  {
+    id: "atlassian-api-token",
+    class: "secrets",
+    pattern: re("\\b(ATATT3xFfGF0[A-Za-z0-9_\\-]{100,}=[A-F0-9]{8})\\b"),
+  },
+
+  // --- Dev tools ---
+  {
+    id: "postman-api-key",
+    class: "secrets",
+    pattern: re("\\b(PMAK-[a-f0-9]{24}-[a-f0-9]{34})\\b"),
+  },
+  {
+    id: "sonar-token",
+    class: "secrets",
+    pattern: re("\\b(sq[abpu]_[a-f0-9]{40})\\b"),
+  },
+  {
+    id: "new-relic-api-key",
+    class: "secrets",
+    pattern: re("\\b(NRAK-[A-Z0-9]{27})\\b"),
+  },
+  {
+    id: "jfrog-api-key",
+    class: "secrets",
+    pattern: re("\\b(AKCp[A-Za-z0-9]{69})\\b"),
+  },
+
+  // --- File / object storage ---
+  {
+    id: "dropbox-token",
+    class: "secrets",
+    pattern: re("\\b(sl\\.[A-Za-z0-9_\\-]{130,})\\b"),
+  },
+
+  // --- Package managers / registries ---
+  {
+    id: "pypi-token",
+    class: "secrets",
+    pattern: re("\\b(pypi-AgEIcHlwaS5vcmcC[A-Za-z0-9_\\-]{50,})\\b"),
+  },
+  {
+    id: "rubygems-api-key",
+    class: "secrets",
+    pattern: re("\\b(rubygems_[a-f0-9]{48})\\b"),
+  },
+
+  // --- Chat / bot tokens (entropy-gated; the shape is shared by lots of
+  // unrelated colon-separated identifiers — without entropy this would
+  // false-positive on things like "12345678:my-build-tag") ---
+  {
+    id: "telegram-bot-token",
+    class: "secrets",
+    pattern: re("\\b(\\d{8,10}:[A-Za-z0-9_\\-]{35})\\b"),
+    entropy: 3.0,
+  },
+  {
+    id: "discord-bot-token",
+    class: "secrets",
+    pattern: re("\\b([MN][A-Za-z\\d]{23}\\.[\\w\\-]{6}\\.[\\w\\-]{27})\\b"),
+    entropy: 3.0,
+  },
+
   // --- Generic password / token assignments ---
   // Catches "password=...", "API_TOKEN: ...", "secret = '...'", etc.
   // Captures the value only; requires entropy to suppress placeholders.
+  // Lives LAST so more-specific vendor rules above win on overlap.
   {
     id: "generic-credential-assignment",
     class: "secrets",

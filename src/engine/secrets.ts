@@ -4,11 +4,16 @@
 // rule's entropy threshold.
 
 import { SECRET_RULES, shannonEntropy } from "./rules/secrets-rules.js";
+import { IMPORTED_SECRET_RULES } from "./rules/gitleaks-imported-rules.js";
 import type { DetectionSpan } from "./spans.js";
+
+// Core rules first, then imported. Within the "secrets" class, merge picks the
+// earlier+longer span on overlap (see spans.ts), so order = precedence.
+const ALL_SECRET_RULES = [...SECRET_RULES, ...IMPORTED_SECRET_RULES];
 
 export function detectSecrets(text: string, allowlist: Set<string>): DetectionSpan[] {
   const out: DetectionSpan[] = [];
-  for (const rule of SECRET_RULES) {
+  for (const rule of ALL_SECRET_RULES) {
     // Rebuild each time so we don't share lastIndex state across calls.
     const re = new RegExp(rule.pattern.source, rule.pattern.flags);
     let m: RegExpExecArray | null;
