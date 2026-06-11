@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  bin-freshness:
+    # bin/ is checked in because it's what the plugin executes at runtime
+    # (see .mcp.json, hooks/hooks.json). A PR that edits src/ without
+    # rebuilding bin/ would ship stale code. Rebuild and diff to catch it.
+    name: bin/ is in sync with src/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: fail if bin/ drifted from src/
+        run: |
+          if ! git diff --exit-code -- bin/; then
+            echo ""
+            echo "::error::bin/ is out of date. Run 'npm run build' locally and commit the result."
+            exit 1
+          fi
