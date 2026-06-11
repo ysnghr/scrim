@@ -53,18 +53,37 @@ export interface Vault {
   // Convenience: resolve every token in `text`. Returns the rewritten string
   // and the list of tokens that could not be resolved.
   resolveAll(text: string): { output: string; missing: string[] };
+  // Update the value an existing token resolves to. The token slug stays the
+  // same so existing context references keep working; future detokenize calls
+  // restore the new value. Throws if the token is unknown.
+  updateValue(token: string, newValue: string): { previousValueHash: string };
   // Number of distinct values currently tokenized.
   size(): number;
   // Vault metadata for /scrim:status.
   stats(): VaultStats;
   // Remove the vault files from disk and clear in-memory state.
   wipe(): void;
+  // Drain the eviction queue (LRU evictions accumulated since last call) so
+  // the caller can audit them. Returns evicted tokens in eviction order.
+  drainEvicted(): string[];
 }
+
+type StoredEntry = Omit<VaultEntry, "value"> & { value: string };
 
 interface VaultState {
   createdAt: string;
-  entries: Record<string, Omit<VaultEntry, "value"> & { value: string }>;
-  byHash: Record<string, string>; // valueHash → token
+  // Map preserves insertion order; we use that for LRU. Existing-entry access
+  // re-inserts at the tail (MRU). Eviction takes the head (LRU).
+  entries: Map<string, StoredEntry>;
+  byHash: Map<string, string>; // valueHash → token
+}
+
+// On-disk format (kept for backwards compat with existing vault files). Stored
+// as plain objects so JSON.stringify works; converted to Maps in memory.
+interface PersistedState {
+  createdAt: string;
+  entries: Record<string, StoredEntry>;
+  byHash: Record<string, string>;
 }
 
 interface VaultPaths {
