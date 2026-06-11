@@ -10,6 +10,16 @@ detection:
   gitleaks: true
   presidio: false
   fast_pii_regex: true
+  # Largest file safe_read will pull fully into memory. Files larger than
+  # this are scanned via the streaming chunked path and return a detection
+  # summary instead of redacted content. Use safe_read with byteRange to
+  # fetch a slice of a large file.
+  max_bytes: 10000000
+  # Streaming chunk size and overlap. The overlap caps the longest single
+  # span the streaming path can reliably detect (default 16 KB covers PEM
+  # blocks and JWTs).
+  chunk_bytes: 1048576
+  chunk_overlap: 16384
 
 tune:
   env_keys_from: [".env.example"]

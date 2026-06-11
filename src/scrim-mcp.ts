@@ -27,11 +27,13 @@ server.registerTool(
   {
     title: "safe_read",
     description:
-      "Read a file with secrets and PII reversibly tokenized. You MUST use this tool — NOT the native Read — for any file matching: .env*, *.tfvars, *.pem, secrets/**, config.{json,yml,yaml,toml}, settings.py, *.tfstate, **/credentials*, any file containing connection strings. Native Read on these paths is typically denied by the project's permissions config; calling it will fail. safe_read returns the same content but with secrets replaced by tokens like ⟦scrim:db_password:a1b2c3⟧. The PreToolUse hook restores real values before any Write touches disk, so the file ends up byte-correct. Use native Read for everything else (source code, build output, README files, etc.).",
+      "Read a file with secrets and PII reversibly tokenized. You MUST use this tool — NOT the native Read — for any file matching: .env*, *.tfvars, *.pem, secrets/**, config.{json,yml,yaml,toml}, settings.py, *.tfstate, **/credentials*, any file containing connection strings. Native Read on these paths is typically denied by the project's permissions config; calling it will fail. The result has `kind: \"content\"` with the redacted file content for files within the size cap (default 10 MB), or `kind: \"summary\"` with per-rule counts + minted token refs + line numbers for files above the cap (streaming scan). To fetch redacted bytes from a large file, call again with `byteRange: [start, end)` for the slice you need. Tokens look like ⟦scrim:db_password:a1b2c3⟧; the PreToolUse hook restores them before any Write touches disk so files end up byte-correct.",
     inputSchema: {
       path: z.string().describe("File path, absolute or relative to repo root"),
       maxBytes: z.number().int().positive().optional()
-        .describe("Refuse files larger than this; default 2_000_000"),
+        .describe("Override the in-memory cap; files above this stream-scan and return a summary. Default from policy (typically 10 MB)."),
+      byteRange: z.tuple([z.number().int().nonnegative(), z.number().int().positive()]).optional()
+        .describe("[start, end) byte range. Reads just this slice and returns redacted content. Use to fetch a window of a file larger than maxBytes."),
     },
   },
   async (args) => {

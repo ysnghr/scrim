@@ -21,6 +21,14 @@ export interface Policy {
     presidio: boolean;
     fastPiiRegex: boolean;
     presidioCommand?: string;
+    // Largest file (in bytes) safe_read will pull fully into memory. Files
+    // above this are scanned via the streaming chunked path and return a
+    // summary instead of redacted content.
+    maxBytes: number;
+    // Streaming-scan chunk parameters. overlap caps the longest single-rule
+    // match the streaming path can reliably catch.
+    chunkBytes: number;
+    chunkOverlap: number;
   };
   tune: {
     envKeysFrom: string[];
@@ -47,7 +55,14 @@ export function defaultPolicy(): Policy {
       pii_internal: "alert",
       internal_hostnames: "redact",
     },
-    detection: { gitleaks: true, presidio: false, fastPiiRegex: true },
+    detection: {
+      gitleaks: true,
+      presidio: false,
+      fastPiiRegex: true,
+      maxBytes: 10_000_000,
+      chunkBytes: 1_048_576,
+      chunkOverlap: 16_384,
+    },
     tune: { envKeysFrom: [".env.example"], internalDomains: [], customPatterns: [] },
     failClosed: true,
     allow: ["AKIAIOSFODNN7EXAMPLE"],
@@ -106,6 +121,15 @@ function requireNonNegInt(obj: Record<string, unknown>, key: string, path: strin
   return v;
 }
 
+function requirePosInt(obj: Record<string, unknown>, key: string, path: string, source: string): number | undefined {
+  const v = obj[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+    throw new PolicyError(`expected positive integer, got ${JSON.stringify(v)}`, `${path}.${key}`, source);
+  }
+  return v;
+}
+
 function validate(raw: unknown, source: string, base: Policy): Policy {
   if (raw === null || raw === undefined) return base;
   if (typeof raw !== "object" || Array.isArray(raw)) {
@@ -153,6 +177,19 @@ function validate(raw: unknown, source: string, base: Policy): Policy {
     if (f !== undefined) detection.fastPiiRegex = f;
     const cmd = requireString(d, "presidio_command", "policy.detection", source);
     if (cmd !== undefined) detection.presidioCommand = cmd;
+    const mb = requirePosInt(d, "max_bytes", "policy.detection", source);
+    if (mb !== undefined) detection.maxBytes = mb;
+    const cb = requirePosInt(d, "chunk_bytes", "policy.detection", source);
+    if (cb !== undefined) detection.chunkBytes = cb;
+    const co = requirePosInt(d, "chunk_overlap", "policy.detection", source);
+    if (co !== undefined) detection.chunkOverlap = co;
+    if (detection.chunkOverlap >= detection.chunkBytes) {
+      throw new PolicyError(
+        `chunk_overlap (${detection.chunkOverlap}) must be smaller than chunk_bytes (${detection.chunkBytes})`,
+        "policy.detection.chunk_overlap",
+        source,
+      );
+    }
   }
 
   // tune
