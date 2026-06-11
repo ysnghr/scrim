@@ -1,0 +1,22 @@
+version: 1
+
+actions:
+  secrets: redact
+  pii_customer: redact
+  pii_internal: alert
+  internal_hostnames: redact
+
+detection:
+  gitleaks: true
+  presidio: false
+  fast_pii_regex: true
+
+tune:
+  env_keys_from: [".env.example"]
+  internal_domains: []
+  custom_patterns: []
+
+fail_closed: true
+
+allow:
+  - "AKIAIOSFODNN7EXAMPLE"
