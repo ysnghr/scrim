@@ -39,7 +39,7 @@ function loadOrCreateKey(p) {
 }
 function loadState(p, key) {
     if (!existsSync(p.vaultPath)) {
-        return { createdAt: new Date().toISOString(), entries: {}, byHash: {} };
+        return { createdAt: new Date().toISOString(), entries: new Map(), byHash: new Map() };
     }
     const packed = readFileSync(p.vaultPath);
     let json;
@@ -55,7 +55,11 @@ function loadState(p, key) {
     if (!parsed.entries || !parsed.byHash) {
         throw new Error("scrim: vault payload is missing required fields");
     }
-    return parsed;
+    return {
+        createdAt: parsed.createdAt,
+        entries: new Map(Object.entries(parsed.entries)),
+        byHash: new Map(Object.entries(parsed.byHash)),
+    };
 }
 function writeFileAtomic(path, data, mode) {
     mkdirSync(dirname(path), { recursive: true });
@@ -80,38 +84,58 @@ class FileVault {
     p;
     key;
     state;
-    constructor(p, key, state) {
+    maxEntries;
+    // Tokens evicted by LRU since the last drainEvicted() call. Held in-process
+    // so the MCP server (which owns the long-lived vault handle) can audit them
+    // immediately after the mint that caused the eviction.
+    evicted = [];
+    constructor(p, key, state, maxEntries) {
         this.p = p;
         this.key = key;
         this.state = state;
+        this.maxEntries = maxEntries;
     }
     tokenize(value, klass, ruleId = klass) {
         if (value.length === 0) {
             throw new Error("scrim: refusing to tokenize empty value");
         }
         const valueHash = sha256Hex(value);
-        const existing = this.state.byHash[valueHash];
-        if (existing)
+        const existing = this.state.byHash.get(valueHash);
+        if (existing) {
+            // Cache hit: bump to MRU by delete+re-insert.
+            const entry = this.state.entries.get(existing);
+            if (entry) {
+                this.state.entries.delete(existing);
+                this.state.entries.set(existing, entry);
+            }
             return existing;
+        }
         let id = newId();
         // Vanishingly unlikely id collision; loop just in case.
-        while (this.state.entries[formatToken(klass, id)])
+        while (this.state.entries.has(formatToken(klass, id)))
             id = newId();
         const token = formatToken(klass, id);
-        this.state.entries[token] = {
+        this.state.entries.set(token, {
             klass,
             value,
             valueHash,
             ruleId,
             createdAt: new Date().toISOString(),
-        };
-        this.state.byHash[valueHash] = token;
+        });
+        this.state.byHash.set(valueHash, token);
+        this.enforceCap();
         this.persist();
         return token;
     }
     resolve(token) {
-        const entry = this.state.entries[token];
-        return entry ? entry.value : null;
+        const entry = this.state.entries.get(token);
+        if (!entry)
+            return null;
+        // Bump to MRU on resolve too — a token actively used by the agent should
+        // not be a candidate for eviction.
+        this.state.entries.delete(token);
+        this.state.entries.set(token, entry);
+        return entry.value;
     }
     resolveAll(text) {
         const tokens = parseTokens(text);
@@ -135,14 +159,42 @@ class FileVault {
         out += text.slice(cursor);
         return { output: out, missing };
     }
+    updateValue(token, newValue) {
+        if (newValue.length === 0) {
+            throw new Error("scrim: refusing to set empty value");
+        }
+        const entry = this.state.entries.get(token);
+        if (!entry) {
+            throw new Error(`scrim: unknown token: ${token}`);
+        }
+        const prior = entry.valueHash;
+        const next = sha256Hex(newValue);
+        // Drop the old byHash mapping so a future re-encounter of the prior value
+        // re-mints a fresh token rather than reusing this one.
+        this.state.byHash.delete(prior);
+        entry.value = newValue;
+        entry.valueHash = next;
+        // If the new value collides with an existing token, the existing token wins
+        // its byHash slot. We don't merge tokens — that would invalidate the slug
+        // in already-issued content.
+        if (!this.state.byHash.has(next)) {
+            this.state.byHash.set(next, token);
+        }
+        // Bump to MRU.
+        this.state.entries.delete(token);
+        this.state.entries.set(token, entry);
+        this.persist();
+        return { previousValueHash: prior };
+    }
     size() {
-        return Object.keys(this.state.entries).length;
+        return this.state.entries.size;
     }
     stats() {
         return { size: this.size(), createdAt: this.state.createdAt };
     }
     wipe() {
-        this.state = { createdAt: new Date().toISOString(), entries: {}, byHash: {} };
+        this.state = { createdAt: new Date().toISOString(), entries: new Map(), byHash: new Map() };
+        this.evicted = [];
         for (const path of [this.p.vaultPath, this.p.keyPath]) {
             try {
                 if (existsSync(path))
@@ -159,15 +211,43 @@ class FileVault {
             // best-effort
         }
     }
+    drainEvicted() {
+        const out = this.evicted;
+        this.evicted = [];
+        return out;
+    }
+    // Remove LRU entries until size <= maxEntries. Records each evicted token
+    // for the caller to audit. maxEntries === 0 disables the cap.
+    enforceCap() {
+        if (this.maxEntries <= 0)
+            return;
+        while (this.state.entries.size > this.maxEntries) {
+            const lru = this.state.entries.keys().next();
+            if (lru.done)
+                break;
+            const token = lru.value;
+            const entry = this.state.entries.get(token);
+            this.state.entries.delete(token);
+            if (entry)
+                this.state.byHash.delete(entry.valueHash);
+            this.evicted.push(token);
+        }
+    }
     persist() {
-        const json = JSON.stringify(this.state);
+        const persisted = {
+            createdAt: this.state.createdAt,
+            entries: Object.fromEntries(this.state.entries),
+            byHash: Object.fromEntries(this.state.byHash),
+        };
+        const json = JSON.stringify(persisted);
         const packed = encrypt(this.key, json);
         writeFileAtomic(this.p.vaultPath, packed, 0o600);
     }
 }
-export function openVault(repoRoot) {
+export function openVault(repoRoot, opts = {}) {
     const p = paths(repoRoot);
     const key = loadOrCreateKey(p);
     const state = loadState(p, key);
-    return new FileVault(p, key, state);
+    const maxEntries = opts.maxEntries ?? 10_000;
+    return new FileVault(p, key, state, maxEntries);
 }
