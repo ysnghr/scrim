@@ -19,7 +19,14 @@ export function defaultPolicy() {
             pii_internal: "alert",
             internal_hostnames: "redact",
         },
-        detection: { gitleaks: true, presidio: false, fastPiiRegex: true },
+        detection: {
+            gitleaks: true,
+            presidio: false,
+            fastPiiRegex: true,
+            maxBytes: 10_000_000,
+            chunkBytes: 1_048_576,
+            chunkOverlap: 16_384,
+        },
         tune: { envKeysFrom: [".env.example"], internalDomains: [], customPatterns: [] },
         failClosed: true,
         allow: ["AKIAIOSFODNN7EXAMPLE"],
@@ -78,6 +85,15 @@ function requireNonNegInt(obj, key, path, source) {
     }
     return v;
 }
+function requirePosInt(obj, key, path, source) {
+    const v = obj[key];
+    if (v === undefined)
+        return undefined;
+    if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+        throw new PolicyError(`expected positive integer, got ${JSON.stringify(v)}`, `${path}.${key}`, source);
+    }
+    return v;
+}
 function validate(raw, source, base) {
     if (raw === null || raw === undefined)
         return base;
@@ -124,6 +140,18 @@ function validate(raw, source, base) {
         const cmd = requireString(d, "presidio_command", "policy.detection", source);
         if (cmd !== undefined)
             detection.presidioCommand = cmd;
+        const mb = requirePosInt(d, "max_bytes", "policy.detection", source);
+        if (mb !== undefined)
+            detection.maxBytes = mb;
+        const cb = requirePosInt(d, "chunk_bytes", "policy.detection", source);
+        if (cb !== undefined)
+            detection.chunkBytes = cb;
+        const co = requirePosInt(d, "chunk_overlap", "policy.detection", source);
+        if (co !== undefined)
+            detection.chunkOverlap = co;
+        if (detection.chunkOverlap >= detection.chunkBytes) {
+            throw new PolicyError(`chunk_overlap (${detection.chunkOverlap}) must be smaller than chunk_bytes (${detection.chunkBytes})`, "policy.detection.chunk_overlap", source);
+        }
     }
     // tune
     const tune = {
