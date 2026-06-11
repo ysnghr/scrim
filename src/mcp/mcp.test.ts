@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildContext } from "./context.js";
 import { processText, BlockedError } from "./process.js";
-import { safeRead, safeGrep, safeShell, scrimStatus } from "./tools.js";
+import {
+  safeRead, safeGrep, safeShell, safeWriteToken, scrimStatus, scrimDoctor,
+  REQUIRED_DENY_RULES,
+} from "./tools.js";
 import { tail as auditTail } from "../audit/index.js";
 
 function freshRepo(): string {
@@ -164,6 +167,111 @@ test("safe_shell redacts command stdout", () => {
   assert.ok(!res.stdout.includes("ghp_aaaa"));
   assert.match(res.stdout, /⟦scrim:github-token-classic:/);
   assert.ok(res.detections >= 1);
+});
+
+test("safe_write_token: updates the value an existing token resolves to", () => {
+  const root = freshRepo();
+  const ctx = buildContext(root);
+
+  // Mint a token via the normal redaction path.
+  const { output } = processText("aws_key = AKIAIOSFODNN7EXAMPL2", "safe_read", ctx);
+  const m = output.match(/⟦scrim:[a-zA-Z0-9_\-]+:[a-f0-9]+⟧/);
+  assert.ok(m, "expected a token in masked output");
+  const token = m![0];
+
+  const res = safeWriteToken({ token, newValue: "AKIAREPLACEDREPLACED" }, ctx);
+  assert.equal(res.token, token);
+  assert.match(res.previousValueHash, /^[a-f0-9]{12}$/);
+  // Resolving via the vault returns the NEW value.
+  assert.equal(ctx.vault.resolve(token), "AKIAREPLACEDREPLACED");
+});
+
+test("safe_write_token: rejects an unknown token", () => {
+  const root = freshRepo();
+  const ctx = buildContext(root);
+  assert.throws(
+    () => safeWriteToken({ token: "⟦scrim:unknown:deadbeef⟧", newValue: "x" }, ctx),
+    /unknown token/,
+  );
+});
+
+test("safe_write_token: rejects empty newValue", () => {
+  const root = freshRepo();
+  const ctx = buildContext(root);
+  const { output } = processText("aws_key = AKIAIOSFODNN7EXAMPL2", "safe_read", ctx);
+  const token = output.match(/⟦scrim:[^⟧]+⟧/)![0];
+  assert.throws(() => safeWriteToken({ token, newValue: "" }, ctx), /empty value/);
+});
+
+test("safe_write_token: audit entry has no raw values", () => {
+  const root = freshRepo();
+  const ctx = buildContext(root);
+  const { output } = processText("aws_key = AKIAIOSFODNN7EXAMPL2", "safe_read", ctx);
+  const token = output.match(/⟦scrim:[^⟧]+⟧/)![0];
+  safeWriteToken({ token, newValue: "AKIAREPLACEDREPLACED" }, ctx);
+
+  const entries = auditTail(root, 10);
+  const rewrite = entries.find((e) => e.action === "rewrite");
+  assert.ok(rewrite, "expected a rewrite entry");
+  const raw = JSON.stringify(rewrite);
+  assert.ok(!raw.includes("AKIAIOSFODNN7EXAMPL2"), "audit must not contain prior value");
+  assert.ok(!raw.includes("AKIAREPLACEDREPLACED"), "audit must not contain new value");
+  assert.match(rewrite!.valueHash!, /^[a-f0-9]{12}$/);
+});
+
+test("scrim_doctor: deny-rules-present fails when settings.json is absent", () => {
+  const root = freshRepo();
+  const ctx = buildContext(root);
+  const report = scrimDoctor(ctx);
+  const denyCheck = report.checks.find((c) => c.name === "deny-rules-present");
+  assert.ok(denyCheck, "expected a deny-rules-present check");
+  assert.equal(denyCheck!.status, "fail");
+  assert.equal(report.ok, false);
+});
+
+test("scrim_doctor: deny-rules-present passes when all required rules are set", () => {
+  const root = freshRepo();
+  mkdirSync(join(root, ".claude"), { recursive: true });
+  writeFileSync(
+    join(root, ".claude", "settings.json"),
+    JSON.stringify({ permissions: { deny: REQUIRED_DENY_RULES } }),
+  );
+  const ctx = buildContext(root);
+  const report = scrimDoctor(ctx);
+  const denyCheck = report.checks.find((c) => c.name === "deny-rules-present");
+  assert.equal(denyCheck!.status, "pass");
+});
+
+test("scrim_doctor: deny-rules-present reports which rules are missing", () => {
+  const root = freshRepo();
+  mkdirSync(join(root, ".claude"), { recursive: true });
+  // Only include the first three rules.
+  writeFileSync(
+    join(root, ".claude", "settings.json"),
+    JSON.stringify({ permissions: { deny: REQUIRED_DENY_RULES.slice(0, 3) } }),
+  );
+  const ctx = buildContext(root);
+  const report = scrimDoctor(ctx);
+  const denyCheck = report.checks.find((c) => c.name === "deny-rules-present");
+  assert.equal(denyCheck!.status, "fail");
+  assert.match(denyCheck!.detail, /3 of 6 recommended deny rules missing/);
+  // Each missing rule appears in the detail.
+  for (const r of REQUIRED_DENY_RULES.slice(3)) {
+    assert.ok(denyCheck!.detail.includes(r), `expected missing rule in detail: ${r}`);
+  }
+});
+
+test("scrim_doctor: vault-healthy warns when near cap", () => {
+  const root = freshRepo();
+  // Tight cap so it's easy to push over 90%.
+  mkdirSync(join(root, ".scrim"), { recursive: true });
+  writeFileSync(join(root, ".scrim", "policy.yml"), "vault:\n  max_entries: 10\n");
+  const ctx = buildContext(root);
+  for (let i = 0; i < 9; i++) ctx.vault.tokenize(`v-${i}`, "secrets");
+  const report = scrimDoctor(ctx);
+  const v = report.checks.find((c) => c.name === "vault-healthy");
+  assert.equal(v!.status, "warn");
+  assert.match(v!.detail, /90%/);
 });
 
 test("scrim_status returns policy summary, vault stats, and audit counts", () => {

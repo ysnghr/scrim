@@ -157,6 +157,63 @@ test("killer scenario: safe_read tokenizes, detokenize hook restores byte-for-by
   }
 });
 
+test("killer scenario: safe_write_token rotates a value, detokenize writes the new value to disk", async () => {
+  const root = mkdtempSync(join(tmpdir(), "scrim-e2e-rotate-"));
+
+  const oldPassword = "X9kQ2vWp1aZmL7Tu4N3bR8";
+  const newPassword = "Q7zM4wXp9aKtN2BfV6cR3y";
+  const original =
+    "database:\n" +
+    "  host: db.example.com\n" +
+    `  password: ${oldPassword}\n` +
+    "  port: 5432\n";
+  writeFileSync(join(root, "config.yml"), original);
+
+  const mcp = startMcp(root);
+  await mcp.call("initialize", {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: { name: "e2e", version: "0" },
+  });
+  mcp.notify("notifications/initialized");
+
+  const readResult = (await callTool(mcp, "safe_read", { path: "config.yml" })) as {
+    content: string;
+  };
+  const tokenMatch = readResult.content.match(/⟦scrim:[a-zA-Z0-9_\-]+:[a-f0-9]+⟧/);
+  assert.ok(tokenMatch, "expected a token in masked content");
+  const token = tokenMatch![0];
+
+  const writeRes = (await callTool(mcp, "safe_write_token", {
+    token, newValue: newPassword,
+  })) as { token: string; previousValueHash: string };
+  assert.equal(writeRes.token, token);
+
+  await mcp.close();
+
+  // The agent now writes the file back. The masked content still references the
+  // same token; the detokenize hook should restore the NEW password.
+  const hookPayload = {
+    hook_event_name: "PreToolUse",
+    tool_name: "Write",
+    tool_input: { file_path: "config.yml", content: readResult.content },
+    cwd: root,
+  };
+  const hookRes = spawnSync("node", [DETOKENIZE_BIN], {
+    input: JSON.stringify(hookPayload),
+    encoding: "utf8",
+  });
+  assert.equal(hookRes.status, 0, `detokenize stderr: ${hookRes.stderr}`);
+  const hookOut = JSON.parse(hookRes.stdout) as {
+    hookSpecificOutput: { permissionDecision: string; updatedInput?: { content?: string } };
+  };
+  assert.equal(hookOut.hookSpecificOutput.permissionDecision, "allow");
+  const restored = hookOut.hookSpecificOutput.updatedInput?.content;
+  const expected = original.replace(oldPassword, newPassword);
+  assert.equal(restored, expected, "restored content must contain the NEW password");
+  assert.ok(!restored!.includes(oldPassword), "old password must NOT appear");
+});
+
 test("killer scenario: detokenize denies a write that contains an unknown token", async () => {
   const root = mkdtempSync(join(tmpdir(), "scrim-e2e-"));
   // No prior safe_read — vault is empty. Any token must be unresolvable.
