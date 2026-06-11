@@ -109,7 +109,7 @@ export function hashValue(repoRoot, value) {
 export function summary(repoRoot) {
     const { logPath } = paths(repoRoot);
     const byAction = {
-        redact: 0, block: 0, alert: 0, allow: 0, restore: 0,
+        redact: 0, block: 0, alert: 0, allow: 0, restore: 0, rewrite: 0, evict: 0, wipe: 0,
     };
     if (!existsSync(logPath))
         return { total: 0, byAction };
