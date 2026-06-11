@@ -37,14 +37,17 @@ export function globToHostRegex(glob: string): RegExp {
   return new RegExp(`\\b${escaped}\\b`, "g");
 }
 
+// Callers must pass a global regex. globToHostRegex, the env-keys builder
+// below, and buildEngineConfig() (for custom patterns) all attach "g" at
+// construction. Resetting lastIndex makes re-use across calls safe.
 function scan(text: string, re: RegExp, klass: string, ruleId: string): DetectionSpan[] {
   const out: DetectionSpan[] = [];
-  const compiled = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+  re.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = compiled.exec(text)) !== null) {
+  while ((m = re.exec(text)) !== null) {
     const value = m[1] ?? m[0];
     if (!value) {
-      if (m.index === compiled.lastIndex) compiled.lastIndex++;
+      if (m.index === re.lastIndex) re.lastIndex++;
       continue;
     }
     const start = m[1] !== undefined ? text.indexOf(value, m.index) : m.index;

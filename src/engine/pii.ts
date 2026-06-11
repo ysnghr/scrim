@@ -28,14 +28,16 @@ function luhn(num: string): boolean {
   return sum % 10 === 0;
 }
 
+// Resets the regex's lastIndex before scanning. Safe because scan() runs
+// synchronously to completion; no other call shares this regex mid-scan.
 function scan(text: string, re: RegExp, klass: string, ruleId: string, accept?: (s: string) => boolean): DetectionSpan[] {
   const out: DetectionSpan[] = [];
-  const compiled = new RegExp(re.source, re.flags);
+  re.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = compiled.exec(text)) !== null) {
+  while ((m = re.exec(text)) !== null) {
     const value = m[0];
     if (!value) {
-      if (m.index === compiled.lastIndex) compiled.lastIndex++;
+      if (m.index === re.lastIndex) re.lastIndex++;
       continue;
     }
     if (accept && !accept(value)) continue;
