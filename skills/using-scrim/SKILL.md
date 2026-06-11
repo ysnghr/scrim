@@ -13,6 +13,7 @@ Prefer Scrim's tools over native `Read` and `Bash` whenever the target could con
 - **`safe_read`** — for any config-like file: `.env*`, `*.tfvars`, `*.pem`, `config.{json,yml,yaml,toml}`, `settings.py`, files under `secrets/**`, seed/fixture data with personal info.
 - **`safe_grep`** — for searches across paths that may include the above.
 - **`safe_shell`** — for commands whose output frequently contains secrets: `env`, `printenv`, `kubectl get secret -o yaml`, `docker inspect`, `git remote -v`, anything that prints a connection string.
+- **`safe_write_token`** — when you need to MODIFY a value behind a token (rotating a password, replacing a secret, changing a URL inside a tokenized connection string). The token slug stays the same; only the underlying value changes. Call this BEFORE the `Write`/`Edit` that should land the new value — every place that token appears in a file you write back will get the new value.
 
 Use native `Read`/`Bash` for everything else (source code, build output, etc.).
 
