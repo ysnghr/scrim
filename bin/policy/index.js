@@ -1,5 +1,209 @@
 // Loads and validates .scrim/policy.yml; merges with the shipped default policy.
 // Exposes a typed Policy that the engine, MCP server, and hooks consume.
-export function load(_repoRoot, _pluginRoot) {
-    throw new Error("policy.load: not implemented yet");
+//
+// The on-disk format uses snake_case (yaml convention); the in-memory type
+// uses camelCase. Field translation happens once here so the rest of the
+// codebase never sees the snake_case form.
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+// The built-in default. Mirrors policy/default-policy.yml. Hardcoding it here
+// (rather than reading the file at runtime) means the plugin works even if a
+// user deletes or moves the bundled policy file.
+export function defaultPolicy() {
+    return {
+        version: 1,
+        actions: {
+            secrets: "redact",
+            pii_customer: "redact",
+            pii_internal: "alert",
+            internal_hostnames: "redact",
+        },
+        detection: { gitleaks: true, presidio: false, fastPiiRegex: true },
+        tune: { envKeysFrom: [".env.example"], internalDomains: [], customPatterns: [] },
+        failClosed: true,
+        allow: ["AKIAIOSFODNN7EXAMPLE"],
+    };
+}
+// Source-tagged error so callers can show users where the bad field lives.
+export class PolicyError extends Error {
+    path;
+    source;
+    constructor(message, path, source) {
+        super(`${source}: ${path}: ${message}`);
+        this.path = path;
+        this.source = source;
+        this.name = "PolicyError";
+    }
+}
+function isAction(v) {
+    return v === "redact" || v === "block" || v === "alert" || v === "allow";
+}
+function requireBool(obj, key, path, source) {
+    const v = obj[key];
+    if (v === undefined)
+        return undefined;
+    if (typeof v !== "boolean")
+        throw new PolicyError(`expected boolean, got ${typeof v}`, `${path}.${key}`, source);
+    return v;
+}
+function requireStringArray(obj, key, path, source) {
+    const v = obj[key];
+    if (v === undefined)
+        return undefined;
+    if (!Array.isArray(v))
+        throw new PolicyError("expected array of strings", `${path}.${key}`, source);
+    for (let i = 0; i < v.length; i++) {
+        if (typeof v[i] !== "string") {
+            throw new PolicyError(`expected string at index ${i}`, `${path}.${key}`, source);
+        }
+    }
+    return v;
+}
+function requireString(obj, key, path, source) {
+    const v = obj[key];
+    if (v === undefined)
+        return undefined;
+    if (typeof v !== "string")
+        throw new PolicyError(`expected string, got ${typeof v}`, `${path}.${key}`, source);
+    return v;
+}
+function validate(raw, source, base) {
+    if (raw === null || raw === undefined)
+        return base;
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+        throw new PolicyError("expected an object at the document root", "policy", source);
+    }
+    const r = raw;
+    // version
+    let version = base.version;
+    if (r["version"] !== undefined) {
+        if (r["version"] !== 1)
+            throw new PolicyError("only version 1 is supported", "policy.version", source);
+        version = 1;
+    }
+    // actions
+    let actions = { ...base.actions };
+    if (r["actions"] !== undefined) {
+        if (typeof r["actions"] !== "object" || r["actions"] === null || Array.isArray(r["actions"])) {
+            throw new PolicyError("expected an object", "policy.actions", source);
+        }
+        for (const [klass, action] of Object.entries(r["actions"])) {
+            if (!isAction(action)) {
+                throw new PolicyError(`expected one of "redact" | "block" | "alert" | "allow", got ${JSON.stringify(action)}`, `policy.actions.${klass}`, source);
+            }
+            actions[klass] = action;
+        }
+    }
+    // detection (snake_case → camelCase)
+    const detection = { ...base.detection };
+    if (r["detection"] !== undefined) {
+        if (typeof r["detection"] !== "object" || r["detection"] === null || Array.isArray(r["detection"])) {
+            throw new PolicyError("expected an object", "policy.detection", source);
+        }
+        const d = r["detection"];
+        const g = requireBool(d, "gitleaks", "policy.detection", source);
+        if (g !== undefined)
+            detection.gitleaks = g;
+        const p = requireBool(d, "presidio", "policy.detection", source);
+        if (p !== undefined)
+            detection.presidio = p;
+        const f = requireBool(d, "fast_pii_regex", "policy.detection", source);
+        if (f !== undefined)
+            detection.fastPiiRegex = f;
+        const cmd = requireString(d, "presidio_command", "policy.detection", source);
+        if (cmd !== undefined)
+            detection.presidioCommand = cmd;
+    }
+    // tune
+    const tune = {
+        envKeysFrom: [...base.tune.envKeysFrom],
+        internalDomains: [...base.tune.internalDomains],
+        customPatterns: [...base.tune.customPatterns],
+    };
+    if (r["tune"] !== undefined) {
+        if (typeof r["tune"] !== "object" || r["tune"] === null || Array.isArray(r["tune"])) {
+            throw new PolicyError("expected an object", "policy.tune", source);
+        }
+        const t = r["tune"];
+        const ekf = requireStringArray(t, "env_keys_from", "policy.tune", source);
+        if (ekf !== undefined)
+            tune.envKeysFrom = ekf;
+        const idoms = requireStringArray(t, "internal_domains", "policy.tune", source);
+        if (idoms !== undefined)
+            tune.internalDomains = idoms;
+        if (t["custom_patterns"] !== undefined) {
+            if (!Array.isArray(t["custom_patterns"])) {
+                throw new PolicyError("expected an array", "policy.tune.custom_patterns", source);
+            }
+            const cps = [];
+            t["custom_patterns"].forEach((cp, i) => {
+                if (typeof cp !== "object" || cp === null || Array.isArray(cp)) {
+                    throw new PolicyError(`expected an object`, `policy.tune.custom_patterns[${i}]`, source);
+                }
+                const o = cp;
+                const name = requireString(o, "name", `policy.tune.custom_patterns[${i}]`, source);
+                const regex = requireString(o, "regex", `policy.tune.custom_patterns[${i}]`, source);
+                const klass = requireString(o, "class", `policy.tune.custom_patterns[${i}]`, source);
+                if (!name || !regex || !klass) {
+                    throw new PolicyError("name, regex, and class are required", `policy.tune.custom_patterns[${i}]`, source);
+                }
+                try {
+                    new RegExp(regex);
+                }
+                catch (err) {
+                    throw new PolicyError(`invalid regex: ${err.message}`, `policy.tune.custom_patterns[${i}].regex`, source);
+                }
+                cps.push({ name, regex, class: klass });
+            });
+            tune.customPatterns = cps;
+        }
+    }
+    // fail_closed
+    let failClosed = base.failClosed;
+    const fc = requireBool(r, "fail_closed", "policy", source);
+    if (fc !== undefined)
+        failClosed = fc;
+    // allow
+    let allow = [...base.allow];
+    const al = requireStringArray(r, "allow", "policy", source);
+    if (al !== undefined)
+        allow = al;
+    return { version, actions, detection, tune, failClosed, allow };
+}
+export function loadPolicyFromString(yamlText, source = "<inline>") {
+    const parsed = yamlText.trim() === "" ? {} : parseYaml(yamlText);
+    return validate(parsed, source, defaultPolicy());
+}
+// Load a policy from `<repoRoot>/.scrim/policy.yml`. If the file does not exist,
+// returns the default policy. If it exists but is malformed, throws PolicyError.
+export function loadPolicy(repoRoot) {
+    const path = join(repoRoot, ".scrim", "policy.yml");
+    if (!existsSync(path))
+        return defaultPolicy();
+    const text = readFileSync(path, "utf8");
+    return loadPolicyFromString(text, path);
+}
+// Translate a Policy into the shape `buildEngineConfig` consumes. Keeps the
+// engine ignorant of policy concerns (actions, fail-closed semantics).
+export function toEngineInput(policy) {
+    return {
+        detection: {
+            gitleaks: policy.detection.gitleaks,
+            presidio: policy.detection.presidio,
+            fastPiiRegex: policy.detection.fastPiiRegex,
+        },
+        tune: {
+            envKeysFrom: policy.tune.envKeysFrom,
+            internalDomains: policy.tune.internalDomains,
+            customPatterns: policy.tune.customPatterns,
+        },
+        allow: policy.allow,
+        presidioCommand: policy.detection.presidioCommand,
+    };
+}
+// Convenience for the MCP server / hooks: given a detection class, what action
+// did the user configure? Defaults to "redact" — the safer choice.
+export function actionFor(policy, klass) {
+    return policy.actions[klass] ?? "redact";
 }
