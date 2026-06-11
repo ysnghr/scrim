@@ -14,7 +14,7 @@ test("tokenize round-trips through resolve", () => {
     const root = freshRepo();
     const v = openVault(root);
     const token = v.tokenize("hunter2-supersecret", "db_password");
-    assert.match(token, /^⟦scrim:db_password:[a-f0-9]{8}⟧$/);
+    assert.match(token, /^⟦scrim:db_password:[a-f0-9]{12}⟧$/);
     assert.equal(v.resolve(token), "hunter2-supersecret");
 });
 test("same value yields the same token within a session", () => {
