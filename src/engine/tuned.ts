@@ -7,7 +7,7 @@
 //   2. internal_domains — globs like "*.internal" matched as internal_hostnames.
 //   3. custom_patterns — user-supplied regex/class pairs.
 
-import type { DetectionSpan } from "./spans.ts";
+import type { DetectionSpan } from "./spans.js";
 
 export interface TunedConfig {
   envKeys: Set<string>;

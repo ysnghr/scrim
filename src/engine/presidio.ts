@@ -8,7 +8,7 @@
 // when the secrets/PII engines themselves error.
 
 import { spawnSync } from "node:child_process";
-import type { DetectionSpan } from "./spans.ts";
+import type { DetectionSpan } from "./spans.js";
 
 export interface PresidioBridgeOptions {
   enabled: boolean;

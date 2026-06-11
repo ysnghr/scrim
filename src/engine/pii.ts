@@ -4,7 +4,7 @@
 // Names/addresses/freeform PII are out of scope here — those need the optional
 // Presidio NER tier (see presidio.ts).
 
-import type { DetectionSpan } from "./spans.ts";
+import type { DetectionSpan } from "./spans.js";
 
 const EMAIL = /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g;
 const SSN = /\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/g;
