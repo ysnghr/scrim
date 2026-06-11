@@ -36,6 +36,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: validate detection rules
+        run: node scripts/check-rules.mjs
 
   bin-freshness:
     # bin/ is checked in because it's what the plugin executes at runtime
