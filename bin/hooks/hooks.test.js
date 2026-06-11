@@ -7,12 +7,14 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { openVault } from "../vault/index.js";
 import { detokenize, rewriteStrings } from "./detokenize.js";
 import { decideBash } from "./bash-guard.js";
 const PLUGIN_ROOT = resolve(import.meta.dirname, "..", "..");
 const DETOKENIZE_BIN = join(PLUGIN_ROOT, "bin", "scrim-detokenize.js");
 const BASH_GUARD_BIN = join(PLUGIN_ROOT, "bin", "scrim-bash-guard.js");
+const STOP_BIN = join(PLUGIN_ROOT, "bin", "scrim-stop.js");
 function freshRepo() {
     return mkdtempSync(join(tmpdir(), "scrim-hook-"));
 }
@@ -104,9 +106,87 @@ test("bash-guard: catches env / printenv inside pipelines and chains", () => {
     }
 });
 test("bash-guard: does NOT deny lookalikes (envoy, environment, etc.)", () => {
-    for (const cmd of ["envoy --version", "echo $environment", "kubectl get pods"]) {
+    for (const cmd of [
+        "envoy --version",
+        "echo $environment",
+        "kubectl get pods",
+        "docker run -d nginx",
+        "cat /etc/hostname",
+        "git status",
+        "set -e",
+        "set -o pipefail",
+    ]) {
         const { output } = decideBash({ tool_input: { command: cmd } });
         assert.equal(output.hookSpecificOutput.permissionDecision, "allow", `expected allow for: ${cmd}`);
+    }
+});
+test("bash-guard: catches single-quoted, double-quoted, and backslash-escaped command names", () => {
+    for (const cmd of ["'env'", '"env"', "\\env", "'printenv' HOME"]) {
+        const { output } = decideBash({ tool_input: { command: cmd } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `expected deny for: ${cmd}`);
+    }
+});
+test("bash-guard: catches commands nested in bash -c / sh -c", () => {
+    for (const cmd of [
+        "bash -c 'env | head'",
+        "sh -c \"printenv\"",
+        "bash -c 'kubectl get secret foo'",
+    ]) {
+        const { output } = decideBash({ tool_input: { command: cmd } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `expected deny for: ${cmd}`);
+    }
+});
+test("bash-guard: catches commands wrapped by eval", () => {
+    for (const cmd of ["eval env", "eval 'env'", "eval \"printenv\""]) {
+        const { output } = decideBash({ tool_input: { command: cmd } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `expected deny for: ${cmd}`);
+    }
+});
+test("bash-guard: catches commands inside $(...) and `...` substitutions", () => {
+    for (const cmd of ["$(env)", "echo $(printenv HOME)", "echo `env`"]) {
+        const { output } = decideBash({ tool_input: { command: cmd } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `expected deny for: ${cmd}`);
+    }
+});
+test("bash-guard: catches xargs- and timeout-wrapped commands", () => {
+    for (const cmd of [
+        "xargs env",
+        "echo whatever | xargs printenv",
+        "timeout 5 env",
+        "timeout --signal=KILL 5 printenv",
+    ]) {
+        const { output } = decideBash({ tool_input: { command: cmd } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `expected deny for: ${cmd}`);
+    }
+});
+test("bash-guard: catches sudo-wrapped commands and sudo flag-value pairs", () => {
+    for (const cmd of [
+        "sudo env",
+        "sudo -E env",
+        "sudo -u root printenv",
+        "sudo --preserve-env env",
+        "doas env",
+    ]) {
+        const { output } = decideBash({ tool_input: { command: cmd } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `expected deny for: ${cmd}`);
+    }
+});
+test("bash-guard: catches /proc/<pid>/environ reads via cat/less/head/tail", () => {
+    for (const cmd of [
+        "cat /proc/self/environ",
+        "cat /proc/12345/environ",
+        "less /proc/$$/environ",
+        "head -n 5 /proc/self/environ",
+        "tail /proc/self/environ",
+    ]) {
+        const { output } = decideBash({ tool_input: { command: cmd } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `expected deny for: ${cmd}`);
+    }
+});
+test("bash-guard: catches bare `set` (dumps variables) but allows `set -e` and `set -o`", () => {
+    for (const cmd of ["set", "set | grep AWS", "set --"]) {
+        const { output } = decideBash({ tool_input: { command: cmd } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `expected deny for: ${cmd}`);
     }
 });
 test("bash-guard: empty command is allowed", () => {
@@ -151,6 +231,47 @@ test("scrim-detokenize.js: denies when a token can't be resolved", () => {
     const out = JSON.parse(res.stdout);
     assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
     assert.match(out.hookSpecificOutput.permissionDecisionReason, /could not be resolved/);
+});
+// ---------------- stop hook ----------------
+test("scrim-stop.js: wipes the vault when wipe_on_stop defaults to true", () => {
+    const root = freshRepo();
+    const vault = openVault(root);
+    vault.tokenize("secret-to-be-wiped", "secrets");
+    const vaultPath = join(root, ".scrim", "vault", "session.bin");
+    const keyPath = join(root, ".scrim", "vault", "key");
+    assert.ok(existsSync(vaultPath));
+    assert.ok(existsSync(keyPath));
+    const res = spawnSync("node", [STOP_BIN], {
+        input: JSON.stringify({ cwd: root }),
+        encoding: "utf8",
+    });
+    assert.equal(res.status, 0, `stderr: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.continue, true);
+    assert.ok(!existsSync(vaultPath), "vault file should be wiped");
+    assert.ok(!existsSync(keyPath), "key file should be wiped");
+});
+test("scrim-stop.js: leaves the vault alone when wipe_on_stop: false", () => {
+    const root = freshRepo();
+    const vault = openVault(root);
+    vault.tokenize("survives", "secrets");
+    const vaultPath = join(root, ".scrim", "vault", "session.bin");
+    mkdirSync(join(root, ".scrim"), { recursive: true });
+    writeFileSync(join(root, ".scrim", "policy.yml"), "vault:\n  wipe_on_stop: false\n");
+    const res = spawnSync("node", [STOP_BIN], {
+        input: JSON.stringify({ cwd: root }),
+        encoding: "utf8",
+    });
+    assert.equal(res.status, 0, `stderr: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.continue, true);
+    assert.ok(existsSync(vaultPath), "vault should still exist");
+});
+test("scrim-stop.js: empty stdin is tolerated", () => {
+    const res = spawnSync("node", [STOP_BIN], { input: "", encoding: "utf8" });
+    assert.equal(res.status, 0);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.continue, true);
 });
 test("scrim-bash-guard.js: denies risky and allows benign", () => {
     const root = freshRepo();
