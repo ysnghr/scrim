@@ -45,7 +45,10 @@ export function processText(text: string, tool: string, ctx: Context): ProcessRe
     const valueHash = hashValue(ctx.repoRoot, value);
 
     if (action === "redact") {
-      const tokenRef = ctx.vault.tokenize(value, span.class, span.ruleId);
+      // The visible token slug is the rule id (e.g. "aws-access-key-id") because
+      // that is what is informative to the agent reading the masked content.
+      // The policy class (e.g. "secrets") is what drove the action lookup above.
+      const tokenRef = ctx.vault.tokenize(value, span.ruleId, span.ruleId);
       out += tokenRef;
       auditAppend(ctx.repoRoot, {
         ruleId: span.ruleId, tool, action: "redact", tokenRef, valueHash,
