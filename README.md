@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/scrim-banner-dark.svg" alt="Scrim" width="100%">
+</p>
+
 # Scrim
 
 **A context firewall for Claude Code.** Scrim keeps secrets and PII out of the model's context window without blocking the agent's work — it *redacts and reversibly tokenizes* sensitive content at the tool boundary, then restores the real values before anything is written back to disk.
