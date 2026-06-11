@@ -17,6 +17,6 @@ export interface Context {
 export function buildContext(repoRoot: string): Context {
   const policy = loadPolicy(repoRoot);
   const engine = buildEngineConfig(toEngineInput(policy), repoRoot);
-  const vault = openVault(repoRoot);
+  const vault = openVault(repoRoot, { maxEntries: policy.vault.maxEntries });
   return { repoRoot, policy, engine, vault };
 }

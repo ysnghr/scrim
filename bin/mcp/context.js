@@ -8,6 +8,6 @@ import { openVault } from "../vault/index.js";
 export function buildContext(repoRoot) {
     const policy = loadPolicy(repoRoot);
     const engine = buildEngineConfig(toEngineInput(policy), repoRoot);
-    const vault = openVault(repoRoot);
+    const vault = openVault(repoRoot, { maxEntries: policy.vault.maxEntries });
     return { repoRoot, policy, engine, vault };
 }

@@ -53,6 +53,15 @@ export function processText(text: string, tool: string, ctx: Context): ProcessRe
       auditAppend(ctx.repoRoot, {
         ruleId: span.ruleId, tool, action: "redact", tokenRef, valueHash,
       });
+      // Drain any LRU evictions that the mint above triggered. Each one gets
+      // its own audit line so /scrim:audit shows them. A later Write that
+      // references an evicted token will fail-closed at the detokenize hook.
+      for (const evicted of ctx.vault.drainEvicted()) {
+        auditAppend(ctx.repoRoot, {
+          ruleId: "vault-evict", tool, action: "evict", tokenRef: evicted,
+          context: { reason: "lru-cap" },
+        });
+      }
       detections.push({ ruleId: span.ruleId, klass: span.class, action, tokenRef });
     } else if (action === "alert") {
       out += value;
