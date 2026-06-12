@@ -4,3 +4,6 @@ bin/*.js.map
 .scrim/
 *.tsbuildinfo
 .DS_Store
+benchmarks/corpus/
+benchmarks/detections-*.jsonl
+benchmarks/summary.md
