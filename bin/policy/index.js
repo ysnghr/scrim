@@ -26,6 +26,7 @@ export function defaultPolicy() {
             maxBytes: 10_000_000,
             chunkBytes: 1_048_576,
             chunkOverlap: 16_384,
+            entropy: { genericCredential: 2.7 },
         },
         tune: { envKeysFrom: [".env.example"], internalDomains: [], customPatterns: [] },
         failClosed: true,
@@ -152,6 +153,19 @@ function validate(raw, source, base) {
         if (detection.chunkOverlap >= detection.chunkBytes) {
             throw new PolicyError(`chunk_overlap (${detection.chunkOverlap}) must be smaller than chunk_bytes (${detection.chunkBytes})`, "policy.detection.chunk_overlap", source);
         }
+        if (d["entropy"] !== undefined) {
+            if (typeof d["entropy"] !== "object" || d["entropy"] === null || Array.isArray(d["entropy"])) {
+                throw new PolicyError("expected an object", "policy.detection.entropy", source);
+            }
+            const e = d["entropy"];
+            if (e["generic_credential"] !== undefined) {
+                const v = e["generic_credential"];
+                if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+                    throw new PolicyError(`expected non-negative number, got ${JSON.stringify(v)}`, "policy.detection.entropy.generic_credential", source);
+                }
+                detection.entropy = { genericCredential: v };
+            }
+        }
     }
     // tune
     const tune = {
@@ -244,6 +258,7 @@ export function toEngineInput(policy) {
             gitleaks: policy.detection.gitleaks,
             presidio: policy.detection.presidio,
             fastPiiRegex: policy.detection.fastPiiRegex,
+            entropy: { genericCredential: policy.detection.entropy.genericCredential },
         },
         tune: {
             envKeysFrom: policy.tune.envKeysFrom,

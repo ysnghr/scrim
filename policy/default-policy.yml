@@ -20,6 +20,11 @@ detection:
   # blocks and JWTs).
   chunk_bytes: 1048576
   chunk_overlap: 16384
+  # Entropy thresholds. generic_credential gates the catchall
+  # `password = ...` / `api_key = ...` rule on top of the placeholder
+  # denylist and value-shape filters. Lower = more recall, more FPs.
+  entropy:
+    generic_credential: 2.7
 
 tune:
   env_keys_from: [".env.example"]

@@ -54,6 +54,61 @@ test("generic credential assignment requires entropy", () => {
     const spans = detect(real, baseConfig());
     assert.ok(spans.length >= 1, "expected at least one detection for high-entropy password");
 });
+test("generic credential: placeholder denylist rejects look-like-secret-but-isnt values", () => {
+    // Each value is a placeholder — should NOT be flagged.
+    const cases = [
+        "password = changeme123",
+        "secret = your_api_key",
+        "api_key = placeholder",
+        "auth_token = hunter2",
+        "client_secret = correct-horse-battery-staple",
+        "password = test",
+        "password = TODO",
+        "password = password",
+        "password = p@ssw0rd",
+    ];
+    for (const text of cases) {
+        const spans = detect(text, baseConfig());
+        const generic = spans.filter((s) => s.ruleId === "generic-credential-assignment");
+        assert.equal(generic.length, 0, `placeholder should be rejected: ${text}`);
+    }
+});
+test("generic credential: shape filters reject IPs, URLs, and greetings", () => {
+    const cases = [
+        'password = 127.0.0.1',
+        'password = 10.20.30.40',
+        'password = http://internal/foo',
+        'secret = "Hello, World!"',
+        'password = postgres://user@host/db',
+    ];
+    for (const text of cases) {
+        const spans = detect(text, baseConfig());
+        const generic = spans.filter((s) => s.ruleId === "generic-credential-assignment");
+        assert.equal(generic.length, 0, `shape-filtered value should be rejected: ${text}`);
+    }
+});
+test("generic credential: lowered threshold catches low-entropy real passwords", () => {
+    // `Password1` has entropy ~2.95 — below the old 3.0 threshold but above
+    // the new 2.7 default, and it does not match any placeholder/shape filter.
+    const text = "password = Password1";
+    const spans = detect(text, baseConfig());
+    const generic = spans.filter((s) => s.ruleId === "generic-credential-assignment");
+    assert.equal(generic.length, 1, "Password1 should be flagged under the new 2.7 threshold");
+});
+test("generic credential: policy can raise the threshold to be stricter", () => {
+    // Same Password1 fixture, but raise threshold above its entropy (~2.95).
+    const cfg = buildEngineConfig({
+        detection: {
+            gitleaks: true, fastPiiRegex: false, presidio: false,
+            entropy: { genericCredential: 4.0 },
+        },
+        tune: { envKeysFrom: [], internalDomains: [], customPatterns: [] },
+        allow: [],
+    }, "/tmp/nonexistent-repo");
+    const spans = detect("password = Password1", cfg);
+    const generic = spans.filter((s) => s.ruleId === "generic-credential-assignment");
+    assert.equal(generic.length, 0, "raising threshold to 4.0 should reject Password1");
+});
 test("URL with basic auth captures only the password", () => {
     const text = "DATABASE_URL=postgres://app:hunter2-supersecret@db.internal:5432/prod";
     const spans = detect(text, baseConfig());

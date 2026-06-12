@@ -43,12 +43,13 @@ export function buildEngineConfig(input, repoRoot) {
         presidioCommand: input.presidioCommand,
         tuned: { envKeys, internalDomainPatterns, customPatterns },
         allowlist: new Set(input.allow),
+        genericCredentialEntropy: input.detection.entropy?.genericCredential ?? 2.7,
     };
 }
 export function detect(text, cfg) {
     const spans = [];
     if (cfg.gitleaks)
-        spans.push(...detectSecrets(text, cfg.allowlist));
+        spans.push(...detectSecrets(text, cfg.allowlist, cfg.genericCredentialEntropy));
     if (cfg.fastPiiRegex)
         spans.push(...detectFastPii(text, cfg.allowlist));
     spans.push(...detectTuned(text, cfg.tuned, cfg.allowlist));
