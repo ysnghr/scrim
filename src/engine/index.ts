@@ -26,10 +26,18 @@ export interface EngineConfig {
   presidioCommand?: string;
   tuned: TunedConfig;
   allowlist: Set<string>;
+  // Shannon-entropy threshold for the generic-credential-assignment rule.
+  // Lower → more recall, more FPs. Default in policy is 2.7.
+  genericCredentialEntropy: number;
 }
 
 export interface EngineBuildInput {
-  detection: { gitleaks: boolean; presidio: boolean; fastPiiRegex: boolean };
+  detection: {
+    gitleaks: boolean;
+    presidio: boolean;
+    fastPiiRegex: boolean;
+    entropy?: { genericCredential?: number };
+  };
   tune: {
     envKeysFrom: string[];
     internalDomains: string[];
@@ -67,12 +75,13 @@ export function buildEngineConfig(input: EngineBuildInput, repoRoot: string): En
     presidioCommand: input.presidioCommand,
     tuned: { envKeys, internalDomainPatterns, customPatterns },
     allowlist: new Set(input.allow),
+    genericCredentialEntropy: input.detection.entropy?.genericCredential ?? 2.7,
   };
 }
 
 export function detect(text: string, cfg: EngineConfig): DetectionSpan[] {
   const spans: DetectionSpan[] = [];
-  if (cfg.gitleaks) spans.push(...detectSecrets(text, cfg.allowlist));
+  if (cfg.gitleaks) spans.push(...detectSecrets(text, cfg.allowlist, cfg.genericCredentialEntropy));
   if (cfg.fastPiiRegex) spans.push(...detectFastPii(text, cfg.allowlist));
   spans.push(...detectTuned(text, cfg.tuned, cfg.allowlist));
   if (cfg.presidio) {
