@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+  <a href="LICENSE.md"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange.svg">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-blueviolet.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-193%20passing-brightgreen.svg">
@@ -370,4 +370,4 @@ Please open an issue before large changes. Security-sensitive reports: see [`SEC
 
 ## 📄 License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE.md](LICENSE.md).
